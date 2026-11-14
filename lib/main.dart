@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'screens/passenger/passenger_shell.dart';
 
 void main() {
   runApp(const MyApp());
@@ -9,16 +10,20 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    const navy = Color(0xFF1E3A8A);
+
     return MaterialApp(
       title: 'Antar Jemput Mahasiswa',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        primarySwatch: Colors.blue,
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: navy).copyWith(primary: navy),
+        scaffoldBackgroundColor: const Color(0xFFF3F4F6),
       ),
-      initialRoute: '/',
-      // Fondasi routing untuk seluruh anggota tim
+      initialRoute: '/passenger', // sementara, supaya langsung terlihat
       routes: {
         '/': (context) => const PlaceholderScreen(title: 'Halaman Login/Register'),
-        '/passenger': (context) => const PlaceholderScreen(title: 'Beranda Penumpang (Area Alan)'),
+        '/passenger': (context) => const PassengerShell(),
         '/driver': (context) => const PlaceholderScreen(title: 'Beranda Pengemudi (Area Rakha)'),
         '/history': (context) => const PlaceholderScreen(title: 'Riwayat Perjalanan (Area Dhani)'),
       },
@@ -26,7 +31,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// Widget sementara agar routing di atas bisa berjalan dan tidak error
 class PlaceholderScreen extends StatelessWidget {
   final String title;
   const PlaceholderScreen({super.key, required this.title});
@@ -36,10 +40,8 @@ class PlaceholderScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: Text(title)),
       body: Center(
-        child: Text(
-          title,
-          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-        ),
+        child: Text(title,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
       ),
     );
   }
