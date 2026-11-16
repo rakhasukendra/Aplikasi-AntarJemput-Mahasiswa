@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+    function isDriver() {
+      return signedIn() && userDoc(request.auth.uid).role == 'driver';
+    }
+    function validPoint(point) {
+      return point is map
+        && point.latitude is number && point.latitude >= -90 && point.latitude <= 90
+        && point.longitude is number && point.longitude >= -180 && point.longitude <= 180
+        && point.label is string;
+    }
+    function validDriverTransition(oldStatus, newStatus) {
+      return (oldStatus == 'accepted' && newStatus in ['arrived', 'cancelled'])
+        || (oldStatus == 'arrived' && newStatus in ['inProgress', 'cancelled'])
+        || (oldStatus == 'inProgress' && newStatus in ['completed', 'cancelled']);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.role == 'passenger';
+      allow update, delete: if false;
+    }
+
+    match /trips/{tripId} {
+      allow create: if signedIn()
+        && request.resource.data.passengerId == request.auth.uid
+        && request.resource.data.driverId == null
+        && request.resource.data.status == 'requested'
+        && request.resource.data.scheduledAt is timestamp
+        && request.resource.data.passengerCount is int
+        && request.resource.data.passengerCount >= 1
+        && request.resource.data.passengerCount <= 4
+        && validPoint(request.resource.data.pickup)
+        && validPoint(request.resource.data.destination);
+
+      allow read: if signedIn() && (
+        resource.data.passengerId == request.auth.uid
+        || resource.data.driverId == request.auth.uid
+        || (isDriver() && resource.data.status == 'requested')
+      );
+
+      allow update: if signedIn() && (
+        (isDriver()
+          && resource.data.status == 'requested'
+          && resource.data.driverId == null
+          && request.resource.data.driverId == request.auth.uid
+          && request.resource.data.driverName is string
+          && request.resource.data.status == 'accepted'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['driverId', 'driverName', 'status', 'updatedAt']))
+        || (resource.data.driverId == request.auth.uid
+          && request.resource.data.driverId == resource.data.driverId
+          && validDriverTransition(resource.data.status, request.resource.data.status)
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'updatedAt'])
+        )
+        || (resource.data.passengerId == request.auth.uid
+          && resource.data.status == 'requested'
+          && request.resource.data.status == 'cancelled'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'updatedAt']))
+      );
+      allow delete: if false;
+    }
+
+    match /drivers/{driverId}/locations/{locationId} {
+      allow create, update: if signedIn() && request.auth.uid == driverId
+        && isDriver()
+        && request.resource.data.latitude is number
+        && request.resource.data.latitude >= -90
+        && request.resource.data.latitude <= 90
+        && request.resource.data.longitude is number
+        && request.resource.data.longitude >= -180
+        && request.resource.data.longitude <= 180
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.tripId is string
+        && get(/databases/$(database)/documents/trips/$(request.resource.data.tripId)).data.driverId == driverId
+        && get(/databases/$(database)/documents/trips/$(request.resource.data.tripId)).data.status in ['accepted', 'arrived', 'inProgress'];
+      allow delete: if signedIn() && request.auth.uid == driverId && isDriver()
+        && resource.data.tripId is string
+        && get(/databases/$(database)/documents/trips/$(resource.data.tripId)).data.driverId == driverId
+        && get(/databases/$(database)/documents/trips/$(resource.data.tripId)).data.status in ['completed', 'cancelled'];
+      allow read: if signedIn() && (
+        request.auth.uid == driverId
+        || (resource.data.tripId is string
+          && get(/databases/$(database)/documents/trips/$(resource.data.tripId)).data.passengerId == request.auth.uid
+          && get(/databases/$(database)/documents/trips/$(resource.data.tripId)).data.status in ['accepted', 'arrived', 'inProgress'])
+      );
+    }
+  }
+}
