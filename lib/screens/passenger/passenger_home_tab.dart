@@ -1,22 +1,36 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+
 import '../../models/ride_request.dart';
+import '../../models/ride_location.dart';
 import '../../services/ride_repository.dart';
+import '../../services/trip_repository.dart';
+import '../../models/trip.dart';
 import '../../utils/format.dart';
+import '../../widgets/location_picker_map.dart';
 
 class PassengerHomeTab extends StatefulWidget {
-  /// Dipanggil setelah pesanan berhasil dibuat (untuk pindah ke tab Riwayat).
-  final VoidCallback onOrderCreated;
+  /// Dipanggil setelah pesanan berhasil dibuat agar peta perjalanan dibuka.
+  final ValueChanged<RideRequest> onOrderCreated;
+  final String? passengerId;
+  final TripRepository? tripRepository;
+  final bool localMode;
 
-  const PassengerHomeTab({super.key, required this.onOrderCreated});
+  const PassengerHomeTab({
+    super.key,
+    required this.onOrderCreated,
+    this.passengerId,
+    this.tripRepository,
+    this.localMode = false,
+  });
 
   @override
   State<PassengerHomeTab> createState() => _PassengerHomeTabState();
 }
 
 class _PassengerHomeTabState extends State<PassengerHomeTab> {
-  // Data pengguna sementara. Nanti diganti dari data login (Anggota 1/4).
-  static const _userName = 'Penumpang';
-  static const _userInfo = 'NIM: 21102045 • Ilmu Komputer';
+  static const _campusCenter = LatLng(-7.558, 110.856);
 
   static const _pickupSuggestions = [
     'Gerbang Utama Kampus Barat',
@@ -33,7 +47,7 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
 
   // (label, menit dari sekarang)
   static const _timeOptions = [
-    ('Sekarang (10 Menit lagi)', 10),
+    ('10 menit lagi', 10),
     ('30 Menit lagi', 30),
     ('1 Jam lagi', 60),
   ];
@@ -42,14 +56,17 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
   final _formKey = GlobalKey<FormState>();
   final _pickupCtrl = TextEditingController();
   final _destCtrl = TextEditingController();
+  final _homeMapController = MapController();
   int _timeIndex = 0;
   DateTime? _customTime;
   int _count = 1;
+  int _stepIndex = 0;
+  RideLocation? _pickupLocation;
+  RideLocation? _destinationLocation;
 
   @override
   void initState() {
     super.initState();
-    // Supaya kartu estimasi tarif ikut berubah saat teks diketik.
     _pickupCtrl.addListener(() => setState(() {}));
     _destCtrl.addListener(() => setState(() {}));
   }
@@ -58,7 +75,23 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
   void dispose() {
     _pickupCtrl.dispose();
     _destCtrl.dispose();
+    _homeMapController.dispose();
     super.dispose();
+  }
+
+  /// Geser kamera peta agar menampilkan marker yang sudah dipilih.
+  void _syncMapCamera() {
+    final p = _pickupLocation;
+    final d = _destinationLocation;
+    if (p != null && d != null) {
+      final midLat = (p.latitude + d.latitude) / 2;
+      final midLng = (p.longitude + d.longitude) / 2;
+      _homeMapController.move(LatLng(midLat, midLng), 14);
+    } else if (p != null) {
+      _homeMapController.move(LatLng(p.latitude, p.longitude), 15);
+    } else if (d != null) {
+      _homeMapController.move(LatLng(d.latitude, d.longitude), 15);
+    }
   }
 
   // ---------- Logika ----------
@@ -83,8 +116,10 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
       lastDate: now.add(const Duration(days: 30)),
     );
     if (date == null || !mounted) return null;
-    final time =
-        await showTimePicker(context: context, initialTime: TimeOfDay.now());
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
     if (time == null) return null;
     return DateTime(date.year, date.month, date.day, time.hour, time.minute);
   }
@@ -104,16 +139,8 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
     }
   }
 
-  // Estimasi SEMENTARA: belum ada peta/jarak asli, jadi jarak dibuat
-  // dummy dari panjang teks. Ganti dengan hitungan jarak sungguhan nanti.
-  bool get _hasRoute =>
-      _pickupCtrl.text.trim().isNotEmpty && _destCtrl.text.trim().isNotEmpty;
-  double get _distanceKm =>
-      1.0 + ((_pickupCtrl.text.trim() + _destCtrl.text.trim()).length % 50) / 10;
-  int get _fareMin => ((_distanceKm * 2500) / 500).round() * 500;
-  int get _fareMax => _fareMin + 2000;
-
-  void _submit() {
+  Future<void> _submit() async {
+    if (_stepIndex != 1) return;
     if (!_formKey.currentState!.validate()) return;
 
     final scheduled = _scheduledAt;
@@ -126,19 +153,47 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
       return;
     }
 
-    RideRepository.instance.add(
-      RideRequest(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        pickup: _pickupCtrl.text.trim(),
-        destination: _destCtrl.text.trim(),
-        scheduledAt: scheduled,
-        passengerCount: _count,
-      ),
+    var rideId = DateTime.now().microsecondsSinceEpoch.toString();
+    final repository = widget.tripRepository;
+    if (repository?.isConfigured == true && widget.passengerId != null) {
+      if (_pickupLocation == null || _destinationLocation == null) {
+        _showMessage(
+          'Pilih titik jemput dan tujuan lewat peta agar perjalanan dapat dilacak.',
+        );
+        return;
+      }
+      try {
+        rideId = await repository!.createTrip(
+          TripDraft(
+            passengerId: widget.passengerId!,
+            pickup: _pickupLocation!,
+            destination: _destinationLocation!,
+            passengerCount: _count,
+            scheduledAt: scheduled,
+          ),
+        );
+      } catch (error) {
+        _showMessage('Pesanan gagal dikirim. Periksa koneksi lalu coba lagi.');
+        return;
+      }
+    }
+
+    final request = RideRequest(
+      id: rideId,
+      pickup: _pickupCtrl.text.trim(),
+      destination: _destCtrl.text.trim(),
+      scheduledAt: scheduled,
+      passengerCount: _count,
+      pickupLocation: _pickupLocation,
+      destinationLocation: _destinationLocation,
     );
+    RideRepository.instance.add(request);
 
     // Reset form
     _pickupCtrl.clear();
     _destCtrl.clear();
+    _pickupLocation = null;
+    _destinationLocation = null;
     setState(() {
       _timeIndex = 0;
       _customTime = null;
@@ -146,11 +201,45 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
     });
 
     _showMessage('Pesanan berhasil diajukan');
-    widget.onOrderCreated();
+    widget.onOrderCreated(request);
   }
 
   void _showMessage(String text) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  void _continueToSchedule() {
+    if (_formKey.currentState!.validate()) {
+      setState(() => _stepIndex = 1);
+    }
+  }
+
+  Future<void> _pickLocation({required bool pickup}) async {
+    final selected = await showModalBottomSheet<RideLocation>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => SizedBox(
+        height: MediaQuery.sizeOf(sheetContext).height * 0.88,
+        child: LocationPickerMap(
+          title: pickup ? 'Pilih titik jemput' : 'Pilih tujuan',
+          initialLocation: pickup ? _pickupLocation : _destinationLocation,
+          onLocationSelected: (location) =>
+              Navigator.pop(sheetContext, location),
+        ),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      if (pickup) {
+        _pickupLocation = selected;
+        _pickupCtrl.text = selected.label;
+      } else {
+        _destinationLocation = selected;
+        _destCtrl.text = selected.label;
+      }
+    });
+    _syncMapCamera();
   }
 
   // ---------- Tampilan ----------
@@ -159,77 +248,226 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
   Widget build(BuildContext context) {
     return Form(
       key: _formKey,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          _greetingCard(),
-          const SizedBox(height: 12),
-          _searchCard(),
-          const SizedBox(height: 12),
-          _mapCard(),
-          const SizedBox(height: 12),
-          _fareCard(),
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 52,
-            child: FilledButton(
-              onPressed: _submit,
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text('Pesan Antar Jemput',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  SizedBox(width: 8),
-                  Icon(Icons.arrow_forward, size: 20),
-                ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final sheetWidth = constraints.maxWidth > 560
+              ? 560.0
+              : constraints.maxWidth;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              _homeMap(),
+              Positioned.fill(
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: SizedBox(
+                    width: sheetWidth,
+                    child: DraggableScrollableSheet(
+                      key: ValueKey(_stepIndex),
+                      initialChildSize: _stepIndex == 0 ? 0.72 : 0.54,
+                      minChildSize: 0.42,
+                      maxChildSize: 0.9,
+                      expand: false,
+                      builder: (context, scrollController) => Container(
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.surface,
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(24),
+                          ),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x26000000),
+                              blurRadius: 16,
+                              offset: Offset(0, -4),
+                            ),
+                          ],
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: ListView(
+                          controller: scrollController,
+                          padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+                          children: [
+                            Center(
+                              child: Container(
+                                width: 36,
+                                height: 4,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFD4D9CE),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Text(
+                              'Langkah ${_stepIndex + 1} dari 2',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Color(0xFF414B42),
+                              ),
+                            ),
+                            if (widget.localMode) ...[
+                              const SizedBox(height: 8),
+                              const Card(
+                                child: Padding(
+                                  padding: EdgeInsets.all(12),
+                                  child: Text(
+                                    'Mode lokal: pesanan hanya tersimpan di perangkat ini dan tidak dikirim ke driver.',
+                                    style: TextStyle(fontSize: 14),
+                                  ),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 8),
+                            LinearProgressIndicator(
+                              value: _stepIndex == 0 ? 0.5 : 1,
+                            ),
+                            const SizedBox(height: 16),
+                            if (_stepIndex == 0) ...[
+                              _searchCard(),
+                              const SizedBox(height: 16),
+                              SizedBox(
+                                height: 52,
+                                child: FilledButton(
+                                  onPressed: _continueToSchedule,
+                                  child: const Text(
+                                    'Lanjut',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ] else ...[
+                              _scheduleCard(),
+                              const SizedBox(height: 12),
+                              _safetyCard(),
+                              const SizedBox(height: 16),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: () =>
+                                          setState(() => _stepIndex = 0),
+                                      child: const Text('Kembali'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: FilledButton(
+                                      onPressed: _submit,
+                                      child: const Text(
+                                        'Pesan jemput',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _safetyCard(),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _greetingCard() {
-    return _SectionCard(
-      child: Row(
-        children: [
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Halo, $_userName! 👋',
-                    style:
-                        TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                SizedBox(height: 4),
-                Text(_userInfo,
-                    style: TextStyle(fontSize: 12, color: Colors.grey)),
+  /// Peta latar untuk area kampus dan marker lokasi.
+  Widget _homeMap() {
+    final primary = Theme.of(context).colorScheme.primary;
+    final markers = <Marker>[];
+
+    if (_pickupLocation != null) {
+      markers.add(
+        Marker(
+          point: LatLng(_pickupLocation!.latitude, _pickupLocation!.longitude),
+          width: 40,
+          height: 40,
+          child: Icon(Icons.location_on, color: primary, size: 36),
+        ),
+      );
+    }
+    if (_destinationLocation != null) {
+      markers.add(
+        Marker(
+          point: LatLng(
+            _destinationLocation!.latitude,
+            _destinationLocation!.longitude,
+          ),
+          width: 40,
+          height: 40,
+          child: Icon(Icons.flag, color: Colors.green.shade700, size: 32),
+        ),
+      );
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        FlutterMap(
+          mapController: _homeMapController,
+          options: MapOptions(
+            initialCenter: _campusCenter,
+            initialZoom: 15,
+            interactionOptions: const InteractionOptions(
+              flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+            ),
+            onTap: (_, _) => _pickLocation(pickup: _pickupLocation == null),
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName:
+                  'com.example.aplikasi_antarjemput_mahasiswa',
+              maxZoom: 19,
+            ),
+            if (markers.isNotEmpty) MarkerLayer(markers: markers),
+            const RichAttributionWidget(
+              attributions: [
+                TextSourceAttribution('© OpenStreetMap contributors'),
               ],
             ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.green.shade100,
-              borderRadius: BorderRadius.circular(20),
+          ],
+        ),
+
+        Positioned(
+          top: 12,
+          left: 12,
+          child: SafeArea(
+            bottom: false,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.94),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                _pickupLocation == null && _destinationLocation == null
+                    ? 'Ketuk peta untuk pilih lokasi'
+                    : _pickupLocation != null && _destinationLocation != null
+                    ? 'Jemput & tujuan dipilih'
+                    : _pickupLocation != null
+                    ? 'Jemput dipilih. Ketuk peta untuk memilih tujuan'
+                    : 'Tujuan dipilih. Ketuk peta untuk memilih titik jemput',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.verified, size: 18, color: Colors.green.shade800),
-                const SizedBox(width: 6),
-                Text('Penumpang\nTerverifikasi',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.green.shade900)),
-              ],
-            ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -240,39 +478,28 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(Icons.circle, size: 10, color: primary),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text('Cari Perjalanan Kampus',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              ),
-              Icon(Icons.circle, size: 8, color: Colors.green.shade600),
-              const SizedBox(width: 4),
-              const Text('18 Pengemudi Aktif',
-                  style: TextStyle(fontSize: 11, color: Colors.grey)),
-            ],
+          const Text(
+            'Titik jemput dan tujuan',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 16),
 
           // --- Titik jemput ---
-          _label('Titik Jemput *', 'Zona Halte / Gate'),
+          _label('Titik jemput *'),
           const SizedBox(height: 6),
           TextFormField(
             controller: _pickupCtrl,
             decoration: _fieldDecoration(
               hint: 'Masukkan titik jemput',
               icon: Icon(Icons.location_on, color: primary),
-              suffix: IconButton(
-                icon: const Icon(Icons.my_location, size: 20),
-                // Simulasi "lokasi saya" sampai ada GPS sungguhan.
-                onPressed: () => _pickupCtrl.text = _pickupSuggestions.first,
-              ),
             ),
-            validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Titik jemput wajib diisi' : null,
+            validator: (v) => (v == null || v.trim().isEmpty)
+                ? 'Titik jemput wajib diisi'
+                : null,
+          ),
+          _mapPickerAction(
+            label: 'Pilih titik jemput lewat peta',
+            onPressed: () => _pickLocation(pickup: true),
           ),
           const SizedBox(height: 8),
           _chips(_pickupSuggestions, _pickupCtrl),
@@ -286,14 +513,13 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
           ),
 
           // --- Tujuan ---
-          _label('Tujuan *', 'Area Kampus & Sekitarnya'),
+          _label('Tujuan *'),
           const SizedBox(height: 6),
           TextFormField(
             controller: _destCtrl,
             decoration: _fieldDecoration(
               hint: 'Masukkan tujuan',
               icon: Icon(Icons.flag, color: Colors.green.shade700),
-              suffix: const Icon(Icons.history, size: 20),
             ),
             validator: (v) {
               if (v == null || v.trim().isEmpty) return 'Tujuan wajib diisi';
@@ -304,11 +530,27 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
               return null;
             },
           ),
+          _mapPickerAction(
+            label: 'Pilih tujuan lewat peta',
+            onPressed: () => _pickLocation(pickup: false),
+          ),
           const SizedBox(height: 8),
           _chips(_destSuggestions, _destCtrl),
-          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
 
-          // --- Waktu & penumpang ---
+  Widget _scheduleCard() {
+    return _SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Atur jadwal',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 16),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -335,39 +577,6 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
-
-          // --- Catatan ---
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF3F4F6),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.warning_amber_rounded,
-                    color: Colors.amber, size: 20),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text.rich(
-                    TextSpan(
-                      style: TextStyle(fontSize: 12),
-                      children: [
-                        TextSpan(text: 'Pastikan titik jemput berada di '),
-                        TextSpan(
-                            text: 'zona halte / titik kumpul resmi kampus',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
-                        TextSpan(
-                            text: ' agar pengemudi mudah menemukanmu.'),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
         ],
       ),
     );
@@ -388,7 +597,7 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
         value: _timeIndex,
         isExpanded: true,
         underline: const SizedBox.shrink(),
-        style: const TextStyle(fontSize: 12, color: Colors.black87),
+        style: const TextStyle(fontSize: 14, color: Colors.black87),
         items: [
           for (var i = 0; i < _timeOptions.length; i++)
             DropdownMenuItem(
@@ -424,123 +633,15 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
             iconColor: Colors.black54,
             onTap: _count > 1 ? () => setState(() => _count--) : null,
           ),
-          Text('$_count Orang',
-              style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text(
+            '$_count Orang',
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
           _StepButton(
             icon: Icons.add,
             color: primary,
             iconColor: Colors.white,
             onTap: _count < 4 ? () => setState(() => _count++) : null,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _mapCard() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: SizedBox(
-        height: 130,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Peta hanya ilustrasi. Nanti bisa diganti flutter_map/google_maps.
-            Container(color: const Color(0xFFD7E3EC)),
-            CustomPaint(painter: _MapPainter()),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                color: Colors.black54,
-                child: Row(
-                  children: [
-                    const Icon(Icons.alt_route, size: 16, color: Colors.white),
-                    const SizedBox(width: 6),
-                    const Expanded(
-                      child: Text('Rute Kampus Terverifikasi',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold)),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.red.shade400,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Text('Live Telemetry',
-                          style: TextStyle(color: Colors.white, fontSize: 10)),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _fareCard() {
-    final primary = Theme.of(context).colorScheme.primary;
-    final fareText = _hasRoute
-        ? '${formatRupiah(_fareMin)} – ${formatRupiah(_fareMax)}'
-        : '-';
-
-    return _SectionCard(
-      color: const Color(0xFFE5E7EB),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Icon(Icons.navigation_outlined, color: primary),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Jarak Perjalanan',
-                        style: TextStyle(fontSize: 11)),
-                    Text(
-                      _hasRoute
-                          ? '${_distanceKm.toStringAsFixed(1)} km (±8-12 menit)'
-                          : '-',
-                      style: const TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  const Text('Estimasi Tarif', style: TextStyle(fontSize: 11)),
-                  Text(fareText,
-                      style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: primary)),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.green.shade200,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Text('Hemat s.d 50%',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
@@ -564,13 +665,14 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Standar Keamanan Komunitas',
-                    style:
-                        TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                Text(
+                  'Keselamatan perjalanan',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
                 SizedBox(height: 2),
                 Text(
-                  'Helm Standar SNI & Verifikasi KTM Mahasiswa wajib saat perjalanan.',
-                  style: TextStyle(fontSize: 12),
+                  'Gunakan helm selama perjalanan.',
+                  style: TextStyle(fontSize: 14, color: Colors.black87),
                 ),
               ],
             ),
@@ -582,32 +684,38 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
 
   // ---------- Helper kecil ----------
 
-  Widget _label(String left, String right) => Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(left,
-              style:
-                  const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-          Text(right, style: const TextStyle(fontSize: 11, color: Colors.grey)),
-        ],
-      );
+  Widget _label(String text) => Text(
+    text,
+    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+  );
+
+  Widget _mapPickerAction({
+    required String label,
+    required VoidCallback onPressed,
+  }) => Align(
+    alignment: Alignment.centerLeft,
+    child: TextButton.icon(
+      onPressed: onPressed,
+      icon: const Icon(Icons.map_outlined, size: 18),
+      label: Text(label),
+    ),
+  );
 
   InputDecoration _fieldDecoration({
     required String hint,
     required Widget icon,
     Widget? suffix,
-  }) =>
-      InputDecoration(
-        hintText: hint,
-        prefixIcon: icon,
-        suffixIcon: suffix,
-        filled: true,
-        fillColor: const Color(0xFFF3F4F6),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
-        ),
-      );
+  }) => InputDecoration(
+    hintText: hint,
+    prefixIcon: icon,
+    suffixIcon: suffix,
+    filled: true,
+    fillColor: const Color(0xFFF3F4F6),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide.none,
+    ),
+  );
 
   Widget _chips(List<String> items, TextEditingController target) =>
       SingleChildScrollView(
@@ -618,7 +726,7 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
               Padding(
                 padding: const EdgeInsets.only(right: 8),
                 child: ActionChip(
-                  label: Text(s, style: const TextStyle(fontSize: 12)),
+                  label: Text(s, style: const TextStyle(fontSize: 14)),
                   visualDensity: VisualDensity.compact,
                   onPressed: () => target.text = s,
                 ),
@@ -632,15 +740,14 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
 
 class _SectionCard extends StatelessWidget {
   final Widget child;
-  final Color color;
-  const _SectionCard({required this.child, this.color = Colors.white});
+  const _SectionCard({required this.child});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: color,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
       ),
       child: child,
@@ -655,14 +762,15 @@ class _IconLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(
-        children: [
-          Icon(icon, size: 16),
-          const SizedBox(width: 4),
-          Text(text,
-              style:
-                  const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-        ],
-      );
+    children: [
+      Icon(icon, size: 16),
+      const SizedBox(width: 4),
+      Text(
+        text,
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+      ),
+    ],
+  );
 }
 
 class _StepButton extends StatelessWidget {
@@ -685,8 +793,8 @@ class _StepButton extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          width: 32,
-          height: 32,
+          width: 44,
+          height: 44,
           decoration: BoxDecoration(
             color: color,
             borderRadius: BorderRadius.circular(8),
@@ -696,42 +804,4 @@ class _StepButton extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Gambar peta sederhana (jalan + rute) sebagai pengganti peta asli.
-class _MapPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final road = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 7
-      ..style = PaintingStyle.stroke;
-    final thin = Paint()
-      ..color = Colors.white70
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke;
-    final route = Paint()
-      ..color = const Color(0xFF1E3A8A)
-      ..strokeWidth = 4
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawLine(Offset(0, size.height * .3),
-        Offset(size.width, size.height * .55), road);
-    canvas.drawLine(Offset(size.width * .3, 0),
-        Offset(size.width * .45, size.height), road);
-    canvas.drawLine(Offset(0, size.height * .8),
-        Offset(size.width, size.height * .75), thin);
-    canvas.drawLine(Offset(size.width * .75, 0),
-        Offset(size.width * .8, size.height), thin);
-
-    final path = Path()
-      ..moveTo(size.width * .15, size.height * .7)
-      ..quadraticBezierTo(
-          size.width * .4, size.height * .2, size.width * .85, size.height * .4);
-    canvas.drawPath(path, route);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

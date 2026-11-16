@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+
 import '../models/ride_request.dart';
 
 class RideRepository extends ChangeNotifier {

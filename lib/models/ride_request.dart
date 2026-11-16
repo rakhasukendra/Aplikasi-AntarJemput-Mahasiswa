@@ -1,3 +1,5 @@
+import 'ride_location.dart';
+
 enum RideStatus {
   pending('Menunggu'),
   accepted('Diterima'),
@@ -15,6 +17,8 @@ class RideRequest {
   final String destination;
   final DateTime scheduledAt;
   final int passengerCount;
+  final RideLocation? pickupLocation;
+  final RideLocation? destinationLocation;
   RideStatus status;
 
   RideRequest({
@@ -23,6 +27,8 @@ class RideRequest {
     required this.destination,
     required this.scheduledAt,
     required this.passengerCount,
+    this.pickupLocation,
+    this.destinationLocation,
     this.status = RideStatus.pending,
   });
 }
