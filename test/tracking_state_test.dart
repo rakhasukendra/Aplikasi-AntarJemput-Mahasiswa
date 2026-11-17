@@ -15,8 +15,10 @@ void main() {
           body: AvailableTripsScreen(
             user: AppUser(
               uid: 'driver-1',
-              role: UserRole.driver,
-              displayName: '',
+              name: '',
+              nim: '',
+              email: '',
+              role: 'driver',
             ),
           ),
         ),

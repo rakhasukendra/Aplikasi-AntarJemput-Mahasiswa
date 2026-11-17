@@ -1,13 +1,1 @@
-{
-  "firestore": {
-    "rules": "firebase/firestore.rules"
-  },
-  "emulators": {
-    "firestore": {
-      "port": 8080
-    },
-    "ui": {
-      "enabled": false
-    }
-  }
-}
+{"firestore":{"rules":"firebase/firestore.rules"},"emulators":{"firestore":{"port":8080},"ui":{"enabled":false}},"flutter":{"platforms":{"android":{"default":{"projectId":"anjem-mawa","appId":"1:500144157321:android:b25b7892c54a42320a0c58","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"anjem-mawa","configurations":{"android":"1:500144157321:android:b25b7892c54a42320a0c58","web":"1:500144157321:web:709b3c9ec32955220a0c58"}}}}}}

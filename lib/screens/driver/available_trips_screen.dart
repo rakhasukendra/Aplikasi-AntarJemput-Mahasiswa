@@ -56,9 +56,9 @@ class AvailableTripsScreen extends StatelessWidget {
                     await repository.acceptTrip(
                       trip.id,
                       user.uid,
-                      driverName: user.displayName.trim().isEmpty
+                      driverName: user.name.trim().isEmpty
                           ? 'Driver'
-                          : user.displayName.trim(),
+                          : user.name.trim(),
                     );
                     if (!context.mounted) return;
                     Navigator.push(

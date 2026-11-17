@@ -58,6 +58,19 @@ class TripRepository {
         );
   }
 
+  /// Semua perjalanan yang pernah ditangani oleh driver tertentu.
+  Stream<List<Trip>> driverTrips(String driverId) {
+    if (_firestore == null) return const Stream.empty();
+    return _trips
+        .where('driverId', isEqualTo: driverId)
+        .snapshots()
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => Trip.fromMap(doc.id, _fromFirestore(doc.data())))
+              .toList(),
+        );
+  }
+
   Stream<Trip?> watchTrip(String tripId) {
     if (_firestore == null) return const Stream.empty();
     return _trips

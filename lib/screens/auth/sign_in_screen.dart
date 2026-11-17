@@ -1,6 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+
+import '../../models/app_user.dart';
+import '../../services/user_service.dart';
 
 class SignInScreen extends StatefulWidget {
   final VoidCallback onSignedIn;
@@ -15,6 +17,7 @@ class _SignInScreenState extends State<SignInScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   final _name = TextEditingController();
+  final _nim = TextEditingController();
   bool _isRegistering = false;
   String _role = 'passenger';
   String? _error;
@@ -25,38 +28,53 @@ class _SignInScreenState extends State<SignInScreen> {
     _email.dispose();
     _password.dispose();
     _name.dispose();
+    _nim.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
+    // Validasi field wajib
     if (_email.text.trim().isEmpty || _password.text.isEmpty) {
       setState(() => _error = 'Masukkan email dan kata sandi.');
       return;
     }
-    if (_isRegistering && _name.text.trim().isEmpty) {
-      setState(() => _error = 'Masukkan nama lengkap.');
-      return;
+    if (_isRegistering) {
+      if (_name.text.trim().isEmpty) {
+        setState(() => _error = 'Masukkan nama lengkap.');
+        return;
+      }
+      if (_nim.text.trim().isEmpty) {
+        setState(() => _error = 'Masukkan NIM.');
+        return;
+      }
     }
+
     setState(() {
       _busy = true;
       _error = null;
     });
+
     try {
       if (_isRegistering) {
+        // Buat akun Firebase Auth
         final credential = await FirebaseAuth.instance
             .createUserWithEmailAndPassword(
               email: _email.text.trim(),
               password: _password.text,
             );
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(credential.user!.uid)
-            .set({
-              'role': _role,
-              'displayName': _name.text.trim(),
-              'createdAt': FieldValue.serverTimestamp(),
-            });
+
+        // Simpan profil lengkap ke Firestore via UserService
+        await UserService().createUserProfile(
+          AppUser(
+            uid: credential.user!.uid,
+            name: _name.text.trim(),
+            nim: _nim.text.trim(),
+            email: _email.text.trim(),
+            role: _role,
+          ),
+        );
       } else {
+        // Masuk dengan akun yang sudah ada
         await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: _email.text.trim(),
           password: _password.text,
@@ -108,6 +126,8 @@ class _SignInScreenState extends State<SignInScreen> {
                     style: TextStyle(fontSize: 16),
                   ),
                   const SizedBox(height: 28),
+
+                  // Toggle Masuk / Daftar
                   SegmentedButton<bool>(
                     segments: const [
                       ButtonSegment(value: false, label: Text('Masuk')),
@@ -118,6 +138,8 @@ class _SignInScreenState extends State<SignInScreen> {
                         setState(() => _isRegistering = value.first),
                   ),
                   const SizedBox(height: 18),
+
+                  // Email
                   TextField(
                     controller: _email,
                     keyboardType: TextInputType.emailAddress,
@@ -127,6 +149,8 @@ class _SignInScreenState extends State<SignInScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
+
+                  // Kata sandi
                   TextField(
                     controller: _password,
                     obscureText: true,
@@ -135,8 +159,12 @@ class _SignInScreenState extends State<SignInScreen> {
                       border: OutlineInputBorder(),
                     ),
                   ),
+
+                  // Field tambahan saat registrasi
                   if (_isRegistering) ...[
                     const SizedBox(height: 12),
+
+                    // Nama lengkap
                     TextField(
                       controller: _name,
                       textCapitalization: TextCapitalization.words,
@@ -145,7 +173,20 @@ class _SignInScreenState extends State<SignInScreen> {
                         border: OutlineInputBorder(),
                       ),
                     ),
+                    const SizedBox(height: 12),
+
+                    // NIM
+                    TextField(
+                      controller: _nim,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'NIM',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
                     const SizedBox(height: 16),
+
+                    // Pilih peran
                     SegmentedButton<String>(
                       segments: const [
                         ButtonSegment(
@@ -174,11 +215,15 @@ class _SignInScreenState extends State<SignInScreen> {
                       ),
                     ),
                   ],
+
+                  // Pesan error
                   if (_error != null) ...[
                     const SizedBox(height: 12),
                     Text(_error!, style: TextStyle(color: colors.error)),
                   ],
                   const SizedBox(height: 20),
+
+                  // Tombol submit
                   FilledButton(
                     onPressed: _busy ? null : _submit,
                     child: Text(

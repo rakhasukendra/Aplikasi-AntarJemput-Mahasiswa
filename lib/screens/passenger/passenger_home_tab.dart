@@ -153,29 +153,52 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
       return;
     }
 
-    var rideId = DateTime.now().microsecondsSinceEpoch.toString();
     final repository = widget.tripRepository;
-    if (repository?.isConfigured == true && widget.passengerId != null) {
-      if (_pickupLocation == null || _destinationLocation == null) {
-        _showMessage(
-          'Pilih titik jemput dan tujuan lewat peta agar perjalanan dapat dilacak.',
-        );
+    final firebaseReady = repository?.isConfigured == true;
+
+    late final String rideId;
+
+    if (firebaseReady) {
+      final passengerId = widget.passengerId;
+
+      if (passengerId == null || passengerId.isEmpty) {
+        _showMessage('Silakan login terlebih dahulu.');
         return;
       }
+
+      if (_pickupLocation == null || _destinationLocation == null) {
+        _showMessage('Pilih titik jemput dan tujuan melalui peta.');
+        return;
+      }
+
       try {
         rideId = await repository!.createTrip(
           TripDraft(
-            passengerId: widget.passengerId!,
+            passengerId: passengerId,
             pickup: _pickupLocation!,
             destination: _destinationLocation!,
             passengerCount: _count,
             scheduledAt: scheduled,
           ),
         );
-      } catch (error) {
-        _showMessage('Pesanan gagal dikirim. Periksa koneksi lalu coba lagi.');
+
+        debugPrint('Pesanan berhasil dibuat: $rideId');
+      } catch (error, stackTrace) {
+        debugPrint('Gagal membuat pesanan: $error');
+        debugPrint('$stackTrace');
+
+        _showMessage(
+          'Pesanan gagal dikirim. Periksa koneksi dan konfigurasi Firebase.',
+        );
         return;
       }
+    } else {
+      if (!widget.localMode) {
+        _showMessage('Firebase belum siap. Pesanan belum dapat dikirim.');
+        return;
+      }
+
+      rideId = DateTime.now().microsecondsSinceEpoch.toString();
     }
 
     final request = RideRequest(
@@ -200,7 +223,12 @@ class _PassengerHomeTabState extends State<PassengerHomeTab> {
       _count = 1;
     });
 
-    _showMessage('Pesanan berhasil diajukan');
+    _showMessage(
+      firebaseReady
+          ? 'Pesanan berhasil dikirim ke driver.'
+          : 'Pesanan tersimpan secara lokal.',
+    );
+
     widget.onOrderCreated(request);
   }
 

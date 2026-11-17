@@ -18,11 +18,11 @@ class AuthGate extends StatelessWidget {
       if (!authSnapshot.hasData) {
         return SignInScreen(onSignedIn: () {});
       }
-      final user = authSnapshot.data!;
+      final firebaseUser = authSnapshot.data!;
       return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         future: FirebaseFirestore.instance
             .collection('users')
-            .doc(user.uid)
+            .doc(firebaseUser.uid)
             .get(),
         builder: (context, profileSnapshot) {
           if (profileSnapshot.hasError) {
@@ -37,28 +37,34 @@ class AuthGate extends StatelessWidget {
               body: Center(child: CircularProgressIndicator()),
             );
           }
+
           final data = profileSnapshot.data!.data();
-          final role = data?['role'] == 'driver'
-              ? UserRole.driver
-              : UserRole.passenger;
-          final appUser = AppUser(
-            uid: user.uid,
-            role: role,
-            displayName: data?['displayName'] as String? ?? '',
+          if (data == null) {
+            // Dokumen profil belum ada — tampilkan penumpang tanpa profil
+            return PassengerShell(
+              user: AppUser(
+                uid: firebaseUser.uid,
+                name: firebaseUser.displayName ?? '',
+                nim: '',
+                email: firebaseUser.email ?? '',
+                role: 'passenger',
+              ),
+              tripRepository: TripRepository(
+                firestore: FirebaseFirestore.instance,
+              ),
+            );
+          }
+
+          // Pastikan 'uid' tersedia di map (bisa saja tidak tersimpan)
+          final mapWithUid = {'uid': firebaseUser.uid, ...data};
+          final appUser = AppUser.fromMap(mapWithUid);
+          final tripRepo = TripRepository(
+            firestore: FirebaseFirestore.instance,
           );
-          return appUser.role == UserRole.driver
-              ? DriverShell(
-                  user: appUser,
-                  tripRepository: TripRepository(
-                    firestore: FirebaseFirestore.instance,
-                  ),
-                )
-              : PassengerShell(
-                  user: appUser,
-                  tripRepository: TripRepository(
-                    firestore: FirebaseFirestore.instance,
-                  ),
-                );
+
+          return appUser.role == 'driver'
+              ? DriverShell(user: appUser, tripRepository: tripRepo)
+              : PassengerShell(user: appUser, tripRepository: tripRepo);
         },
       );
     },

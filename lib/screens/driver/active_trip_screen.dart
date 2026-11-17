@@ -5,6 +5,7 @@ import '../../models/app_user.dart';
 import '../../models/trip.dart';
 import '../../services/driver_location_service.dart';
 import '../../services/trip_repository.dart';
+import 'driver_trip_map_screen.dart';
 
 class ActiveTripScreen extends StatefulWidget {
   final String tripId;
@@ -166,6 +167,24 @@ class _ActiveTripScreenState extends State<ActiveTripScreen> {
               FilledButton(
                 onPressed: () => _setStatus(TripStatus.completed),
                 child: const Text('Selesaikan perjalanan'),
+              ),
+            if (trip.status == TripStatus.accepted ||
+                trip.status == TripStatus.arrived ||
+                trip.status == TripStatus.inProgress)
+              OutlinedButton.icon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => DriverTripMapScreen(
+                      tripId: widget.tripId,
+                      driverId: widget.driver.uid,
+                      repository: widget.repository,
+                      locationService: _locationService,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.map_outlined),
+                label: const Text('Lihat peta perjalanan'),
               ),
             if (_locationAttempted && _lastPublishedStatus == null)
               OutlinedButton.icon(
